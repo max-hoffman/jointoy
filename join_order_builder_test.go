@@ -1,10 +1,12 @@
 package jointoy
 
 import (
+	"fmt"
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
 	"github.com/dolthub/go-mysql-server/sql/plan"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -76,5 +78,207 @@ func TestJoinOrderBuilder(t *testing.T) {
 		// check valid and invalid
 
 		// TODO verify optimal plan
+	}
+}
+
+//func TestJoinOrderBuilder_populateSubgraph(t *testing.T) {
+//	childSchema := sql.NewPrimaryKeySchema(sql.Schema{
+//		{Name: "i", Type: sql.Int64, Nullable: true},
+//		{Name: "s", Type: sql.Text, Nullable: true},
+//	})
+//	child := memory.NewTable("test", childSchema, nil)
+//
+//	// make sure TES, SES, and rules are correct
+//	// also nullRejectedRels
+//	tests := []struct {
+//		q        string
+//		expTES   string
+//		expRules []conflictRule
+//	}{
+//		{
+//			q: "select x from xy join (ab left join "
+//		},
+//	}
+//}
+
+func TestAssociativeTransforms(t *testing.T) {
+	// Sourced from Figure 3
+	// each test has a reversible pair test which is a product of its transform
+	validTests := []struct {
+		name      string
+		eA        *edge
+		eB        *edge
+		transform assocTransform
+		rev       bool
+	}{
+		{
+			name:      "assoc(a,b)",
+			eA:        newEdge(InnerJoinType, "110", "010", "100"),
+			eB:        newEdge(InnerJoinType, "101", "110", "001"),
+			transform: assoc,
+		},
+		{
+			name:      "assoc(b,a)",
+			eA:        newEdge(InnerJoinType, "010", "101", "010"),
+			eB:        newEdge(InnerJoinType, "101", "001", "100"),
+			transform: assoc,
+			rev:       true,
+		},
+		{
+			name:      "r-asscom(a,b)",
+			eA:        newEdge(InnerJoinType, "110", "010", "100"),
+			eB:        newEdge(InnerJoinType, "101", "001", "110"),
+			transform: rightAsscom,
+		},
+		{
+			name:      "r-asscom(b,a)",
+			eA:        newEdge(InnerJoinType, "110", "010", "101"),
+			eB:        newEdge(InnerJoinType, "101", "001", "100"),
+			transform: rightAsscom,
+			rev:       true,
+		},
+		{
+			name:      "l-asscom(a,b)",
+			eA:        newEdge(InnerJoinType, "110", "100", "010"),
+			eB:        newEdge(InnerJoinType, "101", "110", "001"),
+			transform: leftAsscom,
+		},
+		{
+			name:      "l-asscom(b,a)",
+			eA:        newEdge(InnerJoinType, "110", "101", "010"),
+			eB:        newEdge(InnerJoinType, "101", "100", "001"),
+			transform: leftAsscom,
+			rev:       true,
+		},
+		{
+			name:      "assoc(a,b)",
+			eA:        newEdge(InnerJoinType, "110", "010", "100"),
+			eB:        newEdge(LeftJoinType, "101", "110", "001"),
+			transform: assoc,
+		},
+		// l-asscom is OK with everything but full outerjoin w/ null rejecting A(e1).
+		// Refer to rule table.
+		{
+			name:      "l-asscom(a,b)",
+			eA:        newEdge(LeftJoinType, "110", "100", "010"),
+			eB:        newEdge(InnerJoinType, "101", "110", "001"),
+			transform: leftAsscom,
+		},
+		{
+			name:      "l-asscom(b,a)",
+			eA:        newEdge(LeftJoinType, "110", "101", "010"),
+			eB:        newEdge(LeftJoinType, "101", "100", "001"),
+			transform: leftAsscom,
+			rev:       true,
+		},
+		// TODO special case operators
+	}
+
+	for _, tt := range validTests {
+		t.Run(fmt.Sprintf("OK %s", tt.name), func(t *testing.T) {
+			var res bool
+			if tt.rev {
+				res = tt.transform(tt.eB, tt.eA)
+			} else {
+				res = tt.transform(tt.eA, tt.eB)
+			}
+			require.True(t, res)
+		})
+	}
+
+	invalidTests := []struct {
+		name      string
+		eA        *edge
+		eB        *edge
+		transform assocTransform
+		rev       bool
+	}{
+		// most transforms are invalid, these are also from Figure 3
+		{
+			name:      "assoc(a,b)",
+			eA:        newEdge(InnerJoinType, "110", "010", "100"),
+			eB:        newEdge(InnerJoinType, "101", "001", "100"),
+			transform: assoc,
+		},
+		{
+			name:      "r-asscom(a,b)",
+			eA:        newEdge(InnerJoinType, "110", "010", "100"),
+			eB:        newEdge(InnerJoinType, "101", "100", "010"),
+			transform: rightAsscom,
+		},
+		{
+			name:      "l-asscom(a,b)",
+			eA:        newEdge(InnerJoinType, "110", "010", "100"),
+			eB:        newEdge(InnerJoinType, "101", "001", "100"),
+			transform: leftAsscom,
+		},
+		// these are correct transforms with cross or inner joins, but invalid
+		// with other operators
+		{
+			name:      "assoc(a,b)",
+			eA:        newEdge(LeftJoinType, "110", "010", "100"),
+			eB:        newEdge(InnerJoinType, "101", "110", "001"),
+			transform: assoc,
+		},
+		{
+			// this one depends on rejecting nulls on A(e2)
+			name:      "left join assoc(b,a)",
+			eA:        newEdge(LeftJoinType, "010", "101", "010"),
+			eB:        newEdge(LeftJoinType, "101", "001", "100"),
+			transform: assoc,
+			rev:       true,
+		},
+		{
+			name:      "left join r-asscom(a,b)",
+			eA:        newEdge(LeftJoinType, "110", "010", "100"),
+			eB:        newEdge(InnerJoinType, "101", "001", "110"),
+			transform: rightAsscom,
+		},
+		{
+			name:      "left join r-asscom(b,a)",
+			eA:        newEdge(InnerJoinType, "110", "010", "101"),
+			eB:        newEdge(LeftJoinType, "101", "001", "100"),
+			transform: rightAsscom,
+			rev:       true,
+		},
+		{
+			name:      "left join l-asscom(a,b)",
+			eA:        newEdge(FullOuterJoinType, "110", "100", "010"),
+			eB:        newEdge(InnerJoinType, "101", "110", "001"),
+			transform: leftAsscom,
+		},
+	}
+
+	for _, tt := range invalidTests {
+		t.Run(fmt.Sprintf("Invalid %s", tt.name), func(t *testing.T) {
+			var res bool
+			if tt.rev {
+				res = tt.transform(tt.eB, tt.eA)
+			} else {
+				res = tt.transform(tt.eA, tt.eB)
+			}
+			require.False(t, res)
+		})
+	}
+}
+
+func newVertexSet(s string) vertexSet {
+	v := vertexSet(0)
+	for i, c := range s {
+		if string(c) == "1" {
+			v = v.add(uint64(i))
+		}
+	}
+	return v
+}
+
+func newEdge(op JoinType, ses, leftV, rightV string) *edge {
+	return &edge{
+		op: &operator{
+			joinType:      op,
+			rightVertices: newVertexSet(rightV),
+			leftVertices:  newVertexSet(leftV),
+		},
+		ses: newVertexSet(ses),
 	}
 }

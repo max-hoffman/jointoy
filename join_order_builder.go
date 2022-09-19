@@ -467,7 +467,7 @@ func (e *edge) calcTES(edges []edge) {
 			break
 		}
 		eA := &edges[idx]
-		if !eA.assoc(eB) {
+		if !assoc(eA, eB) {
 			// The edges are not associative, so add a conflict rule mapping from the
 			// right input relations of the child to its left input relations.
 			rule := conflictRule{from: eA.op.rightVertices}
@@ -479,7 +479,7 @@ func (e *edge) calcTES(edges []edge) {
 			}
 			eB.addRule(rule)
 		}
-		if !eA.lAsscom(eB) {
+		if !leftAsscom(eA, eB) {
 			// Left-asscom does not hold, so add a conflict rule mapping from the
 			// left input relations of the child to its right input relations.
 			rule := conflictRule{from: eA.op.leftVertices}
@@ -500,7 +500,7 @@ func (e *edge) calcTES(edges []edge) {
 			break
 		}
 		eA := &edges[idx]
-		if !eB.assoc(eA) {
+		if !assoc(eB, eA) {
 			// The edges are not associative, so add a conflict rule mapping from the
 			// left input relations of the child to its right input relations.
 			rule := conflictRule{from: eA.op.leftVertices}
@@ -512,7 +512,7 @@ func (e *edge) calcTES(edges []edge) {
 			}
 			eB.addRule(rule)
 		}
-		if !eB.rAsscom(eA) {
+		if !rightAsscom(eB, eA) {
 			// Right-asscom does not hold, so add a conflict rule mapping from the
 			// right input relations of the child to its left input relations.
 			rule := conflictRule{from: eA.op.rightVertices}
@@ -587,6 +587,8 @@ func (e *edge) joinIsRedundant(s1, s2 vertexSet) bool {
 	return e.op.leftVertices == s1 && e.op.rightVertices == s2
 }
 
+type assocTransform func(eA, eB *edge) bool
+
 // assoc checks whether the associate is applicable
 // to a binary operator tree. We consider 1) generating cross joins,
 // and 2) the left/right operator join types for this specific transform.
@@ -597,8 +599,8 @@ func (e *edge) joinIsRedundant(s1, s2 vertexSet) bool {
 //	e2 op_a_12 (e1 op_b_13 e3)
 //
 // note: important to compare edge ordering for left deep tree.
-func (e *edge) assoc(edgeB *edge) bool {
-	if edgeB.ses.intersects(e.op.leftVertices) || e.ses.intersects(edgeB.op.rightVertices) {
+func assoc(eA, eB *edge) bool {
+	if eB.ses.intersects(eA.op.leftVertices) || eA.ses.intersects(eB.op.rightVertices) {
 		// associating two operators can estrange the distant relation.
 		// for example:
 		//   (e2 op_a_12 e1) op_b_13 e3
@@ -615,10 +617,10 @@ func (e *edge) assoc(edgeB *edge) bool {
 		// Isolating e2 from op_b makes op_b degenerate, producing a cross join.
 		return false
 	}
-	return checkProperty(assocTable, e, edgeB)
+	return checkProperty(assocTable, eA, eB)
 }
 
-// lAsscom checks whether the left-associate+commute is applicable
+// leftAsscom checks whether the left-associate+commute is applicable
 // to a binary operator tree. We consider 1) generating cross joins,
 // and 2) the left/right operator join types for this specific transform.
 // For example:
@@ -626,8 +628,8 @@ func (e *edge) assoc(edgeB *edge) bool {
 //	(e1 op_a_12 e2) op_b_13 e3
 //	=>
 //	(e1 op_b_13 e3) op_a_12 e2
-func (e *edge) lAsscom(edgeB *edge) bool {
-	if edgeB.ses.intersects(e.op.rightVertices) || e.ses.intersects(edgeB.op.rightVertices) {
+func leftAsscom(eA, eB *edge) bool {
+	if eB.ses.intersects(eA.op.rightVertices) || eA.ses.intersects(eB.op.rightVertices) {
 		// Associating two operators can estrange the distant relation.
 		// For example:
 		//	(e1 op_a_12 e2) op_b_23 e3
@@ -636,7 +638,7 @@ func (e *edge) lAsscom(edgeB *edge) bool {
 		// Isolating e2 from op_b makes op_b degenerate, producing a cross join.
 		return false
 	}
-	return checkProperty(leftAsscomTable, e, edgeB)
+	return checkProperty(leftAsscomTable, eA, eB)
 }
 
 // rAsscom checks whether the left-associate+commute is applicable
@@ -647,8 +649,8 @@ func (e *edge) lAsscom(edgeB *edge) bool {
 //	e3 op_b_13 (e1 op_a_12 e2)
 //	=>
 //	e2 op_a_12 (e1 op_b_13 e3)
-func (e *edge) rAsscom(edgeB *edge) bool {
-	if edgeB.ses.intersects(e.op.leftVertices) || e.ses.intersects(edgeB.op.rightVertices) {
+func rightAsscom(eA, eB *edge) bool {
+	if eB.ses.intersects(eA.op.leftVertices) || eA.ses.intersects(eB.op.leftVertices) {
 		// Associating two operators can estrange the distant relation.
 		// For example:
 		//	e3 op_b_23 (e1 op_a_12 e3)
@@ -657,7 +659,7 @@ func (e *edge) rAsscom(edgeB *edge) bool {
 		// Isolating e2 from op_b makes op_b degenerate, producing a cross join.
 		return false
 	}
-	return checkProperty(leftAsscomTable, e, edgeB)
+	return checkProperty(rightAsscomTable, eA, eB)
 }
 
 func (e *edge) commute() bool {

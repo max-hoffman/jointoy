@@ -16,12 +16,13 @@ func commute(op JoinType) bool {
 type JoinType uint16
 
 const (
-	InnerJoinType JoinType = iota // Inner
-	LeftJoinType                  // Left
-	CrossJoinType                 // Cross
-	SemiJoinType                  // Semi
-	AntiJoinType                  // Anti
-	FullJoinType                  // Full
+	CrossJoinType     JoinType = iota // Inner
+	InnerJoinType                     // Left
+	SemiJoinType                      // Semi
+	AntiJoinType                      // Anti
+	LeftJoinType                      // Cross
+	FullOuterJoinType                 // FullOuter
+	GroupByJoinType                   // GroupBy
 )
 
 // conflictRule is a pair of vertex sets which carry the requirement that if the
@@ -116,33 +117,35 @@ const (
 // assocTable is a lookup table indicating whether it is correct to apply the
 // associative transformation to pairs of join operators.
 // citations: [8] table 2
-var assocTable = [6][6]lookupTableEntry{
-	//             cross-B inner-B semi-B  anti-B  left-B  full-B
-	/* cross-A */ {always, always, always, always, always, never},
-	/* inner-A */ {always, always, always, always, always, never},
-	/* semi-A  */ {never, never, never, never, never, never},
-	/* anti-A  */ {never, never, never, never, never, never},
-	/* left-A  */ {never, never, never, never, table2Note1, never},
-	/* full-A  */ {never, never, never, never, table2Note1, table2Note2},
+var assocTable = [7][7]lookupTableEntry{
+	//             cross-B inner-B semi-B  anti-B  left-B  full-B group-B
+	/* cross-A */ {always, always, always, always, always, never, always},
+	/* inner-A */ {always, always, always, always, always, never, always},
+	/* semi-A  */ {never, never, never, never, never, never, never},
+	/* anti-A  */ {never, never, never, never, never, never, never},
+	/* left-A  */ {never, never, never, never, table2Note1, never, never},
+	/* full-A  */ {never, never, never, never, table2Note1, table2Note2, never},
+	/* group-A  */ {never, never, never, never, never, never, never},
 }
 
 // leftAsscomTable is a lookup table indicating whether it is correct to apply
 // the left-asscom transformation to pairs of join operators.
 // citations: [8] table 3
-var leftAsscomTable = [6][6]lookupTableEntry{
+var leftAsscomTable = [7][7]lookupTableEntry{
 	//             cross-A inner-B semi-B  anti-B  left-B  full-B
-	/* cross-A */ {always, always, always, always, always, never},
-	/* inner-A */ {always, always, always, always, always, never},
-	/* semi-A  */ {always, always, always, always, always, never},
-	/* anti-A  */ {always, always, always, always, always, never},
-	/* left-A  */ {always, always, always, always, always, table3Note1},
-	/* full-A  */ {never, never, never, never, table3Note2, table3Note3},
+	/* cross-A */ {always, always, always, always, always, never, always},
+	/* inner-A */ {always, always, always, always, always, never, always},
+	/* semi-A  */ {always, always, always, always, always, never, always},
+	/* anti-A  */ {always, always, always, always, always, never, always},
+	/* left-A  */ {always, always, always, always, always, table3Note1, always},
+	/* full-A  */ {never, never, never, never, table3Note2, table3Note3, never},
+	/* group-A */ {always, always, always, always, always, never, always},
 }
 
 // rightAsscomTable is a lookup table indicating whether it is correct to apply
 // the right-asscom transformation to pairs of join operators.
 // citations: [8] table 3
-var rightAsscomTable = [6][6]lookupTableEntry{
+var rightAsscomTable = [7][7]lookupTableEntry{
 	//             cross-B inner-B semi-B anti-B left-B full-B
 	/* cross-A */ {always, always, never, never, never, never},
 	/* inner-A */ {always, always, never, never, never, never},
@@ -150,6 +153,7 @@ var rightAsscomTable = [6][6]lookupTableEntry{
 	/* anti-A  */ {never, never, never, never, never, never},
 	/* left-A  */ {never, never, never, never, never, never},
 	/* full-A  */ {never, never, never, never, never, table3Note4},
+	/* group-A */ {never, never, never, never, never, never, never},
 }
 
 // checkProperty returns true if the transformation represented by the given
@@ -157,7 +161,7 @@ var rightAsscomTable = [6][6]lookupTableEntry{
 // most table entries are either true or false, some are conditionally true,
 // depending on the null-rejecting properties of the edge filters (for example,
 // association for two full joins).
-func checkProperty(table [6][6]lookupTableEntry, edgeA, edgeB *edge) bool {
+func checkProperty(table [7][7]lookupTableEntry, edgeA, edgeB *edge) bool {
 	entry := table[getOpIdx(edgeA)][getOpIdx(edgeB)]
 
 	if entry == never {
@@ -202,11 +206,24 @@ func checkProperty(table [6][6]lookupTableEntry, edgeA, edgeB *edge) bool {
 }
 
 // getOpIdx returns an index into the join property static lookup tables given an edge
-// with an associated edge type.
+// with an associated edge type. I originally used int(joinType), but this is fragile
+// to reordering the type definitions.
 func getOpIdx(e *edge) int {
 	switch e.op.joinType {
-	case CrossJoinType, InnerJoinType, SemiJoinType, AntiJoinType, LeftJoinType, FullJoinType:
-		return int(e.op.joinType)
+	case CrossJoinType:
+		return 0
+	case InnerJoinType:
+		return 1
+	case SemiJoinType:
+		return 2
+	case AntiJoinType:
+		return 3
+	case LeftJoinType:
+		return 4
+	case FullOuterJoinType:
+		return 5
+	case GroupByJoinType:
+		return 6
 	default:
 		panic(fmt.Sprintf("invalid operator: %v", e.op.joinType))
 	}
