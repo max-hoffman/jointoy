@@ -5,7 +5,9 @@ import (
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
+	"github.com/dolthub/go-mysql-server/sql/parse"
 	"github.com/dolthub/go-mysql-server/sql/plan"
+	"github.com/dolthub/go-mysql-server/sql/transform"
 	"github.com/stretchr/testify/require"
 	"testing"
 )
@@ -81,25 +83,62 @@ func TestJoinOrderBuilder(t *testing.T) {
 	}
 }
 
-//func TestJoinOrderBuilder_populateSubgraph(t *testing.T) {
-//	childSchema := sql.NewPrimaryKeySchema(sql.Schema{
-//		{Name: "i", Type: sql.Int64, Nullable: true},
-//		{Name: "s", Type: sql.Text, Nullable: true},
-//	})
-//	child := memory.NewTable("test", childSchema, nil)
-//
-//	// make sure TES, SES, and rules are correct
-//	// also nullRejectedRels
-//	tests := []struct {
-//		q        string
-//		expTES   string
-//		expRules []conflictRule
-//	}{
-//		{
-//			q: "select x from xy join (ab left join "
-//		},
-//	}
-//}
+func TestJoinOrderBuilder_populateSubgraph(t *testing.T) {
+	//childSchema := sql.NewPrimaryKeySchema(sql.Schema{
+	//	{Name: "i", Type: sql.Int64, Nullable: true},
+	//	{Name: "s", Type: sql.Text, Nullable: true},
+	//})
+	//child := memory.NewTable("test", childSchema, nil)
+	//
+	//// make sure TES, SES, and rules are correct
+	// also nullRejectedRels
+	tests := []struct {
+		q        string
+		expTES   string
+		expRules []conflictRule
+	}{
+		{
+			q:      "select a from A left join B on a = b",
+			expTES: "11",
+		},
+		{
+			q:      "select a from A left join B on a = b",
+			expTES: "11",
+		},
+		{
+			q: `select x from xy
+				join
+				(ab left join uv on a = v)
+				on x = b
+				inner join pq on u = q`,
+			expTES:   "",
+			expRules: nil,
+		},
+	}
+	ctx := sql.NewEmptyContext()
+	for _, tt := range tests {
+		t.Run(tt.q, func(t *testing.T) {
+			n, err := parse.Parse(ctx, tt.q)
+			require.NoError(t, err)
+			var join sql.Node
+			transform.Inspect(n, func(n sql.Node) bool {
+				if join != nil {
+					return false
+				}
+				switch n := n.(type) {
+				case plan.JoinNode, *plan.CrossJoin:
+					join = n
+					return false
+				default:
+					return true
+				}
+			})
+			b := newJoinOrderBuilder()
+			b.populateSubgraph(join)
+			require.Equal(t, tt.expTES, b.edges[len(b.edges)-1].tes.String())
+		})
+	}
+}
 
 func TestAssociativeTransforms(t *testing.T) {
 	// Sourced from Figure 3
