@@ -42,6 +42,7 @@ type joinOrderBuilder struct {
 	//
 	// The group for a single base relation is simply the base relation itself.
 	plans         map[vertexSet]sql.Node
+	m             *memo
 	edges         []edge
 	vertices      []sql.Node
 	vertexNames   []string
@@ -188,6 +189,7 @@ func (j *joinOrderBuilder) dbSube() {
 			j.addPlans(s1, s2)
 		}
 	}
+	fmt.Println(j.plans[all].String())
 }
 
 func setPrinter(all, s1, s2 vertexSet) {
@@ -214,7 +216,7 @@ func (j *joinOrderBuilder) addPlans(s1, s2 vertexSet) {
 	if j.plans[s1] == nil || j.plans[s2] == nil {
 		// Both inputs must have plans.
 		// need this to prevent cross-joins higher in tree
-		//return
+		return
 	}
 
 	//TODO collect all inner join filters that can be used as select filters
@@ -257,14 +259,11 @@ func (j *joinOrderBuilder) addPlans(s1, s2 vertexSet) {
 }
 
 func (j *joinOrderBuilder) addJoin(op JoinType, s1, s2 vertexSet, joinFilter, selFilters []sql.Expression) {
-	//memoize the join plan
-	var join string
-	switch op {
-	case InnerJoinType:
-		join = "Inner"
-	case LeftJoinType:
-		join = "Left"
-	}
+	// get the optimal subplans for s1, s2
+	// memoize the join plan for s1 join s2
+	// record plan
+	j.plans[s1.union(s2)] = j.m.memoizeJoin(op, j.plans[s1], j.plans[s2], joinFilter, selFilters)
+
 	var s1Names string
 	var rep string
 	for idx, ok := s1.next(0); ok; idx, ok = s1.next(idx + 1) {
@@ -279,7 +278,7 @@ func (j *joinOrderBuilder) addJoin(op JoinType, s1, s2 vertexSet, joinFilter, se
 		s2Names += j.vertexNames[idx]
 		rep = ", "
 	}
-	fmt.Printf("%s\n  - s1: %s\n  - s2: %s\n  - filter: %s\n  - sel: %s\n", join, s1Names, s2Names, joinFilter, selFilters)
+	fmt.Printf("%s\n  - s1: %s\n  - s2: %s\n  - filter: %s\n  - sel: %s\n", op, s1Names, s2Names, joinFilter, selFilters)
 }
 
 func (j *joinOrderBuilder) allVertices() vertexSet {
