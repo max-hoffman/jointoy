@@ -65,5 +65,16 @@ func TestJoinOrderBuilder(t *testing.T) {
 	for _, tt := range tests {
 		j := newJoinOrderBuilder()
 		j.reorderJoin(tt.in)
+
+		// TODO verify SES
+
+		// TODO verify TES
+
+		// TODO verify null rejecting
+
+		// TODO add dummy memo, collect all plans
+		// check valid and invalid
+
+		// TODO verify optimal plan
 	}
 }

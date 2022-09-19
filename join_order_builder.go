@@ -7,6 +7,7 @@ import (
 	"github.com/dolthub/go-mysql-server/sql/expression"
 	"github.com/dolthub/go-mysql-server/sql/plan"
 	"github.com/dolthub/go-mysql-server/sql/transform"
+	"strings"
 )
 
 // conflict detectors; calculate SES and TES
@@ -183,9 +184,28 @@ func (j *joinOrderBuilder) dbSube() {
 				continue
 			}
 			s2 := subset.difference(s1)
+			setPrinter(all, s1, s2)
 			j.addPlans(s1, s2)
 		}
 	}
+}
+
+func setPrinter(all, s1, s2 vertexSet) {
+	s1Arr := make([]string, all.len())
+	for i := range s1Arr {
+		s1Arr[i] = "0"
+	}
+	s2Arr := make([]string, all.len())
+	for i := range s2Arr {
+		s2Arr[i] = "0"
+	}
+	for idx, ok := s1.next(0); ok; idx, ok = s1.next(idx + 1) {
+		s1Arr[idx] = "1"
+	}
+	for idx, ok := s2.next(0); ok; idx, ok = s2.next(idx + 1) {
+		s2Arr[idx] = "1"
+	}
+	fmt.Printf("s1: %s, s2: %s\n", strings.Join(s1Arr, ""), strings.Join(s2Arr, ""))
 }
 
 // addPlans finds operators that let us join (s1 op s2) and (s2 op s1).
@@ -193,7 +213,8 @@ func (j *joinOrderBuilder) addPlans(s1, s2 vertexSet) {
 	// all inner filters could be applied
 	if j.plans[s1] == nil || j.plans[s2] == nil {
 		// Both inputs must have plans.
-		return
+		// need this to prevent cross-joins higher in tree
+		//return
 	}
 
 	//TODO collect all inner join filters that can be used as select filters
@@ -253,7 +274,7 @@ func (j *joinOrderBuilder) addJoin(op JoinType, s1, s2 vertexSet, joinFilter, se
 	}
 	var s2Names string
 	rep = ""
-	for idx, ok := s1.next(0); ok; idx, ok = s2.next(idx + 1) {
+	for idx, ok := s2.next(0); ok; idx, ok = s2.next(idx + 1) {
 		s2Names += rep
 		s2Names += j.vertexNames[idx]
 		rep = ", "
@@ -310,7 +331,7 @@ type edge struct {
 	// filter is the set of join filter that will be used to construct new join
 	// ON conditions.
 	filter   sql.Expression
-	freeVars []*expression.UnresolvedColumn
+	freeVars []*expression.GetField
 
 	// nullRejectedRels is the set of vertexes on which nulls are rejected by the
 	// filters.
@@ -332,11 +353,12 @@ type edge struct {
 }
 
 func (e *edge) populateEdgeProps(allV vertexSet, allNames []string, edges []edge) {
-	var cols []*expression.UnresolvedColumn
+	var cols []*expression.GetField
 	var nullAccepting []sql.Expression
 	transform.InspectExpr(e.filter, func(e sql.Expression) bool {
+		// TODO this needs to separate null accepting before plucking getField
 		switch e := e.(type) {
-		case *expression.UnresolvedColumn:
+		case *expression.GetField:
 			cols = append(cols, e)
 		case *expression.NullSafeEquals, *expression.NullSafeGreaterThan, *expression.NullSafeLessThan,
 			*expression.NullSafeGreaterThanOrEqual, *expression.NullSafeLessThanOrEqual, *expression.IsNull:
@@ -348,21 +370,37 @@ func (e *edge) populateEdgeProps(allV vertexSet, allNames []string, edges []edge
 	e.freeVars = cols
 
 	// null rejection is all vertex set - rejecting vertex set
-	e.nullRejectedRels = e.nullRejectingTables(nullAccepting, allNames, allV)
+	//e.nullRejectedRels = e.nullRejectingTables(nullAccepting, allNames, allV)
+
 	//SES is vertexSet of all tables referenced in cols
 	e.calcSES(cols, allNames)
 	// use CD-C to expand dependency sets for operators
 	// front load preventing applicable operators that would push crossjoins
 	e.calcTES(edges)
+	fmt.Println(e.String())
+}
 
-	fmt.Sprint(e.tes)
+func (e *edge) String() string {
+	b := strings.Builder{}
+	b.WriteString("edge\n")
+	b.WriteString(fmt.Sprintf("  - joinType: %s\n", e.op.joinType.String()))
+	b.WriteString(fmt.Sprintf("  - on: %s\n", e.filter.String()))
+	freeVars := make([]string, len(e.freeVars))
+	for i, v := range e.freeVars {
+		freeVars[i] = v.String()
+	}
+	b.WriteString(fmt.Sprintf("  - free vars: %s\n", e.freeVars))
+	b.WriteString(fmt.Sprintf("  - ses: %s\n", e.ses.String()))
+	b.WriteString(fmt.Sprintf("  - tes: %s\n", e.tes.String()))
+	b.WriteString(fmt.Sprintf("  - nullRej: %s\n", e.nullRejectedRels.String()))
+	return b.String()
 }
 
 func (e *edge) nullRejectingTables(nullAccepting []sql.Expression, allNames []string, allV vertexSet) vertexSet {
 	var nullableSet vertexSet
 	for _, e := range nullAccepting {
 		transform.InspectExpr(e, func(e sql.Expression) bool {
-			if e, ok := e.(*expression.UnresolvedColumn); ok {
+			if e, ok := e.(*expression.GetField); ok {
 				for i, n := range allNames {
 					if n == e.Name() {
 						nullableSet.add(vertexIndex(i))
@@ -377,12 +415,12 @@ func (e *edge) nullRejectingTables(nullAccepting []sql.Expression, allNames []st
 
 // calcSES updates the syntactic eligibility set for an edge. An SES
 // represents all tables this edge's filter requires as input.
-func (e *edge) calcSES(cols []*expression.UnresolvedColumn, allNames []string) {
-	var ses vertexSet
+func (e *edge) calcSES(cols []*expression.GetField, allNames []string) {
+	ses := vertexSet(0)
 	for _, e := range cols {
 		for i, n := range allNames {
-			if n == e.Name() {
-				ses.add(vertexIndex(i))
+			if n == e.Table() {
+				ses = ses.add(vertexIndex(i))
 			}
 		}
 	}
@@ -416,41 +454,78 @@ func (e *edge) calcTES(edges []edge) {
 		e.tes = e.tes.union(e.op.rightVertices)
 	}
 
-	// regular CD-C algorithm
-	// iterate left edges
-	for idx, ok := e.op.leftEdges.Next(0); ok; idx, ok = e.op.leftEdges.Next(idx + 1) {
-		if e.op.leftVertices.isSubsetOf(e.tes) {
+	// CD-C algorithm
+	// Note: the ordering of the transform(eA, eB) functions are important.
+	// eA is the subtree child edge targeted for rearrangement. If the ordering
+	// is switched, the output is nondeterministic.
+
+	// iterate every eA in STO(left(eB))
+	eB := e
+	for idx, ok := eB.op.leftEdges.Next(0); ok; idx, ok = eB.op.leftEdges.Next(idx + 1) {
+		if eB.op.leftVertices.isSubsetOf(eB.tes) {
 			// Fast path to break out early: the TES includes all relations from the
 			// left input.
 			break
 		}
-		child := &edges[idx]
-		if !e.assoc(child) {
+		eA := &edges[idx]
+		if !eA.assoc(eB) {
 			// The edges are not associative, so add a conflict rule mapping from the
 			// right input relations of the child to its left input relations.
-			rule := conflictRule{from: child.op.rightVertices}
-			if child.op.leftVertices.intersects(child.ses) {
+			rule := conflictRule{from: eA.op.rightVertices}
+			if eA.op.leftVertices.intersects(eA.ses) {
 				// A less restrictive conflict rule can be added in this case.
-				rule.to = child.op.leftVertices.intersection(child.ses)
+				rule.to = eA.op.leftVertices.intersection(eA.ses)
 			} else {
-				rule.to = child.op.leftVertices
+				rule.to = eA.op.leftVertices
 			}
-			e.addRule(rule)
+			eB.addRule(rule)
 		}
-		if !e.lAsscom(child) {
+		if !eA.lAsscom(eB) {
 			// Left-asscom does not hold, so add a conflict rule mapping from the
 			// left input relations of the child to its right input relations.
-			rule := conflictRule{from: child.op.leftVertices}
-			if child.op.rightVertices.intersects(child.ses) {
+			rule := conflictRule{from: eA.op.leftVertices}
+			if eA.op.rightVertices.intersects(eA.ses) {
 				// A less restrictive conflict rule can be added in this case.
-				rule.to = child.op.rightVertices.intersection(child.ses)
+				rule.to = eA.op.rightVertices.intersection(eA.ses)
 			} else {
-				rule.to = child.op.rightVertices
+				rule.to = eA.op.rightVertices
 			}
-			e.addRule(rule)
+			eB.addRule(rule)
 		}
 	}
 
+	for idx, ok := e.op.rightEdges.Next(0); ok; idx, ok = e.op.rightEdges.Next(idx + 1) {
+		if e.op.rightVertices.isSubsetOf(e.tes) {
+			// Fast path to break out early: the TES includes all relations from the
+			// right input.
+			break
+		}
+		eA := &edges[idx]
+		if !eB.assoc(eA) {
+			// The edges are not associative, so add a conflict rule mapping from the
+			// left input relations of the child to its right input relations.
+			rule := conflictRule{from: eA.op.leftVertices}
+			if eA.op.rightVertices.intersects(eA.ses) {
+				// A less restrictive conflict rule can be added in this case.
+				rule.to = eA.op.rightVertices.intersection(eA.ses)
+			} else {
+				rule.to = eA.op.rightVertices
+			}
+			eB.addRule(rule)
+		}
+		if !eB.rAsscom(eA) {
+			// Right-asscom does not hold, so add a conflict rule mapping from the
+			// right input relations of the child to its left input relations.
+			rule := conflictRule{from: eA.op.rightVertices}
+			if eA.op.leftVertices.intersects(eA.ses) {
+				// A less restrictive conflict rule can be added in this case.
+				rule.to = eA.op.leftVertices.intersection(eA.ses)
+			} else {
+				rule.to = eA.op.leftVertices
+			}
+			eB.addRule(rule)
+		}
+	}
 }
 
 // addRule adds the given conflict rule to the edge. Before the rule is added to
@@ -513,7 +588,7 @@ func (e *edge) joinIsRedundant(s1, s2 vertexSet) bool {
 	return e.op.leftVertices == s1 && e.op.rightVertices == s2
 }
 
-// asscom checks whether the associate is applicable
+// assoc checks whether the associate is applicable
 // to a binary operator tree. We consider 1) generating cross joins,
 // and 2) the left/right operator join types for this specific transform.
 // The below is a valid association that generates no crossjoin:
@@ -521,6 +596,8 @@ func (e *edge) joinIsRedundant(s1, s2 vertexSet) bool {
 //	(e2 op_a_12 e1) op_b_13 e3
 //	=>
 //	e2 op_a_12 (e1 op_b_13 e3)
+//
+// note: important to compare edge ordering for left deep tree.
 func (e *edge) assoc(edgeB *edge) bool {
 	if edgeB.ses.intersects(e.op.leftVertices) || e.ses.intersects(edgeB.op.rightVertices) {
 		// associating two operators can estrange the distant relation.
@@ -529,7 +606,7 @@ func (e *edge) assoc(edgeB *edge) bool {
 		//   =>
 		//   e2 op_a_12 (e1 op_b_13 e3)
 		// The first operator, a, takes explicit dependencies on e1 and e2.
-		// The second operator, b, takes explicit dependencies on e1 ans e3.
+		// The second operator, b, takes explicit dependencies on e1 and e3.
 		// Associating these two will isolate e2 from op_b for the downward
 		// transform, and e3 from op_a on the upward transform, both of which
 		// are valid. The same is not true for the transform below:

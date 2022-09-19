@@ -6,6 +6,8 @@ import (
 	"math/bits"
 )
 
+//go:generate stringer -type=JoinType -linecomment
+
 // commute returns true if the given join edge type is commutable.
 func commute(op JoinType) bool {
 	return op == InnerJoinType || op == CrossJoinType
@@ -14,12 +16,12 @@ func commute(op JoinType) bool {
 type JoinType uint16
 
 const (
-	InnerJoinType JoinType = iota
-	LeftJoinType
-	CrossJoinType
-	SemiJoinType
-	AntiJoinType
-	FullJoinType
+	InnerJoinType JoinType = iota // Inner
+	LeftJoinType                  // Left
+	CrossJoinType                 // Cross
+	SemiJoinType                  // Semi
+	AntiJoinType                  // Anti
+	FullJoinType                  // Full
 )
 
 // conflictRule is a pair of vertex sets which carry the requirement that if the
@@ -280,10 +282,16 @@ func (s bitSet) len() int {
 
 func (s bitSet) String() string {
 	var str string
-	sep := ""
-	for idx, ok := s.next(0); ok; idx, ok = s.next(idx + 1) {
-		str += fmt.Sprintf("%d%s", idx, sep)
-		sep = ", "
+	var i vertexSet = 1
+	cnt := 0
+	for cnt < s.len() {
+		if (i & s) != 0 {
+			str += "1"
+			cnt++
+		} else {
+			str += "0"
+		}
+		i = i << 1
 	}
 	return str
 }
