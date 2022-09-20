@@ -100,6 +100,17 @@ func (j *joinOrderBuilder) buildJoinOp(n sql.Node) {
 		leftV, rightV = rightV, leftV
 		leftE, rightE = rightE, leftE
 		filter = n.Cond
+	case *FullJoin:
+		typ = FullOuterJoinType
+		filter = n.filter
+	case *SemiJoin:
+		typ = SemiJoinType
+		filter = n.filter
+	case *AntiJoin:
+		typ = AntiJoinType
+		filter = n.filter
+	case *GroupJoin:
+		panic("not supported")
 	default:
 		panic("unreachable")
 	}
@@ -114,6 +125,7 @@ func (j *joinOrderBuilder) buildJoinOp(n sql.Node) {
 	}
 	if !isInner {
 		j.buildNonInnerEdge(op, filter)
+		return
 	}
 	j.buildInnerEdge(op, filter)
 }
@@ -354,18 +366,20 @@ type edge struct {
 func (e *edge) populateEdgeProps(allV vertexSet, allNames []string, edges []edge) {
 	var cols []*expression.GetField
 	var nullAccepting []sql.Expression
-	transform.InspectExpr(e.filter, func(e sql.Expression) bool {
-		// TODO this needs to separate null accepting before plucking getField
-		switch e := e.(type) {
-		case *expression.GetField:
-			cols = append(cols, e)
-		case *expression.NullSafeEquals, *expression.NullSafeGreaterThan, *expression.NullSafeLessThan,
-			*expression.NullSafeGreaterThanOrEqual, *expression.NullSafeLessThanOrEqual, *expression.IsNull:
-			nullAccepting = append(nullAccepting, e)
-		default:
-		}
-		return false
-	})
+	if e.filter != nil {
+		transform.InspectExpr(e.filter, func(e sql.Expression) bool {
+			// TODO this needs to separate null accepting before plucking getField
+			switch e := e.(type) {
+			case *expression.GetField:
+				cols = append(cols, e)
+			case *expression.NullSafeEquals, *expression.NullSafeGreaterThan, *expression.NullSafeLessThan,
+				*expression.NullSafeGreaterThanOrEqual, *expression.NullSafeLessThanOrEqual, *expression.IsNull:
+				nullAccepting = append(nullAccepting, e)
+			default:
+			}
+			return false
+		})
+	}
 	e.freeVars = cols
 
 	// null rejection is all vertex set - rejecting vertex set
@@ -383,7 +397,9 @@ func (e *edge) String() string {
 	b := strings.Builder{}
 	b.WriteString("edge\n")
 	b.WriteString(fmt.Sprintf("  - joinType: %s\n", e.op.joinType.String()))
-	b.WriteString(fmt.Sprintf("  - on: %s\n", e.filter.String()))
+	if e.filter != nil {
+		b.WriteString(fmt.Sprintf("  - on: %s\n", e.filter.String()))
+	}
 	freeVars := make([]string, len(e.freeVars))
 	for i, v := range e.freeVars {
 		freeVars[i] = v.String()

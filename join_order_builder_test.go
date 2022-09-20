@@ -5,10 +5,9 @@ import (
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
-	"github.com/dolthub/go-mysql-server/sql/parse"
 	"github.com/dolthub/go-mysql-server/sql/plan"
-	"github.com/dolthub/go-mysql-server/sql/transform"
 	"github.com/stretchr/testify/require"
+	"strings"
 	"testing"
 )
 
@@ -83,61 +82,178 @@ func TestJoinOrderBuilder(t *testing.T) {
 	}
 }
 
-func TestJoinOrderBuilder_populateSubgraph(t *testing.T) {
-	//childSchema := sql.NewPrimaryKeySchema(sql.Schema{
-	//	{Name: "i", Type: sql.Int64, Nullable: true},
-	//	{Name: "s", Type: sql.Text, Nullable: true},
-	//})
-	//child := memory.NewTable("test", childSchema, nil)
-	//
-	//// make sure TES, SES, and rules are correct
-	// also nullRejectedRels
+func TestJoinOrderBuilder_populateSubgraph2(t *testing.T) {
+	childSchema := sql.NewPrimaryKeySchema(sql.Schema{
+		{Name: "i", Type: sql.Int64, Nullable: true},
+		{Name: "s", Type: sql.Text, Nullable: true},
+	})
+	child := memory.NewTable("test", childSchema, nil)
+
 	tests := []struct {
-		q        string
-		expTES   string
-		expRules []conflictRule
+		name     string
+		join     sql.Node
+		expEdges []edge
 	}{
 		{
-			q:      "select a from A left join B on a = b",
-			expTES: "11",
+			name: "cross join",
+			join: plan.NewCrossJoin(
+				tableNode(child, "a"),
+				plan.NewInnerJoin(
+					tableNode(child, "b"),
+					plan.NewLeftJoin(
+						tableNode(child, "c"),
+						tableNode(child, "d"),
+						newEq("c.x=d.x"),
+					),
+					newEq("b.y=d.y"),
+				),
+			),
+			expEdges: []edge{
+				newEdge2(LeftJoinType, "0011", "0011", "0010", "0001", nil, newEq("c.x=d.x"), ""),  // C x D
+				newEdge2(InnerJoinType, "0101", "0111", "0100", "0011", nil, newEq("b.y=d.y"), ""), // B x (CD)
+				newEdge2(CrossJoinType, "0000", "1111", "1000", "0111", nil, nil, ""),              // A x (BCD)
+			},
 		},
 		{
-			q:      "select a from A left join B on a = b",
-			expTES: "11",
+			name: "right deep left join",
+			join: plan.NewInnerJoin(
+				tableNode(child, "a"),
+				plan.NewInnerJoin(
+					tableNode(child, "b"),
+					plan.NewLeftJoin(
+						tableNode(child, "c"),
+						tableNode(child, "d"),
+						newEq("c.x=d.x"),
+					),
+					newEq("b.y=d.y"),
+				),
+				newEq("a.z=b.z"),
+			),
+			expEdges: []edge{
+				newEdge2(LeftJoinType, "0011", "0011", "0010", "0001", nil, newEq("c.x=d.x"), ""),                                                                     // C x D
+				newEdge2(InnerJoinType, "0101", "0111", "0100", "0011", nil, newEq("b.y=d.y"), ""),                                                                    // B x (CD)
+				newEdge2(InnerJoinType, "1100", "1100", "1000", "0111", []conflictRule{{from: newVertexSet("0001"), to: newVertexSet("0010")}}, newEq("a.z=b.z"), ""), // A x (BCD)
+			},
 		},
 		{
-			q: `select x from xy
-				join
-				(ab left join uv on a = v)
-				on x = b
-				inner join pq on u = q`,
-			expTES:   "",
-			expRules: nil,
+			name: "bushy left joins",
+			join: plan.NewLeftJoin(
+				plan.NewLeftJoin(
+					tableNode(child, "a"),
+					tableNode(child, "b"),
+					newEq("a.x=b.x"),
+				),
+				plan.NewLeftJoin(
+					tableNode(child, "c"),
+					tableNode(child, "d"),
+					newEq("c.x=d.x"),
+				),
+				newEq("b.y=c.y"),
+			),
+			expEdges: []edge{
+				newEdge2(LeftJoinType, "1100", "1100", "1000", "0100", nil, newEq("a.x=b.x"), ""), // A x B
+				newEdge2(LeftJoinType, "0011", "0011", "0010", "0001", nil, newEq("c.x=d.x"), ""), // C x D
+				newEdge2(LeftJoinType, "0110", "1111", "1100", "0011", nil, newEq("b.y=c.y"), ""), // (AB) x (CD)
+			},
+		},
+		{
+			// SELECT *
+			// FROM (SELECT * FROM A INNER JOIN B ON True)
+			// FULL JOIN (SELECT * FROM C INNER JOIN D ON True)
+			// ON A.x = C.x
+			name: "degenerate inner join",
+			join: NewFullJoin(
+				plan.NewInnerJoin(
+					tableNode(child, "a"),
+					tableNode(child, "b"),
+					expression.NewLiteral(true, sql.Boolean),
+				),
+				plan.NewInnerJoin(
+					tableNode(child, "c"),
+					tableNode(child, "d"),
+					expression.NewLiteral(true, sql.Boolean),
+				),
+				newEq("a.x=c.x"),
+			),
+			expEdges: []edge{
+				newEdge2(InnerJoinType, "0000", "1100", "1000", "0100", nil, expression.NewLiteral(true, sql.Boolean), ""), // A x B
+				newEdge2(InnerJoinType, "0000", "0011", "0010", "0001", nil, expression.NewLiteral(true, sql.Boolean), ""), // C x D
+				newEdge2(FullOuterJoinType, "1010", "1111", "1100", "0011", nil, newEq("a.x=c.x"), ""),                     // (AB) x (CD)
+			},
+		},
+		{
+			// SELECT * FROM A
+			// WHERE EXISTS
+			// (
+			//   SELECT * FROM B
+			//   LEFT JOIN C ON B.x = C.x
+			//   WHERE A.y = B.y
+			// )
+			// note: left join is the right child
+			name: "semi join",
+			join: NewSemiJoin(
+				plan.NewLeftJoin(
+					tableNode(child, "b"),
+					tableNode(child, "c"),
+					newEq("b.x=c.x"),
+				),
+				tableNode(child, "a"),
+				newEq("a.y=b.y"),
+			),
+			expEdges: []edge{
+				newEdge2(LeftJoinType, "110", "110", "100", "010", nil, newEq("b.x=c.x"), ""), // B x C
+				newEdge2(SemiJoinType, "101", "101", "110", "001", nil, newEq("a.y=b.y"), ""), // A x (BC)
+			},
+		},
+		{
+			name: "null rejecting",
+			join: plan.NewCrossJoin(
+				tableNode(child, "a"),
+				plan.NewInnerJoin(
+					tableNode(child, "b"),
+					plan.NewLeftJoin(
+						tableNode(child, "c"),
+						tableNode(child, "d"),
+						newEq("c.x=d.x"),
+					),
+					newEq("b.y=d.y"),
+				),
+			),
+			expEdges: []edge{
+				newEdge2(LeftJoinType, "0011", "0011", "0010", "0001", nil, newEq("c.x=d.x"), ""),  // C x D
+				newEdge2(InnerJoinType, "0101", "0111", "0100", "0011", nil, newEq("b.y=d.y"), ""), // B x (CD)
+				newEdge2(CrossJoinType, "0000", "1111", "1000", "0111", nil, nil, ""),              // A x (BCD)
+			},
 		},
 	}
-	ctx := sql.NewEmptyContext()
+
 	for _, tt := range tests {
-		t.Run(tt.q, func(t *testing.T) {
-			n, err := parse.Parse(ctx, tt.q)
-			require.NoError(t, err)
-			var join sql.Node
-			transform.Inspect(n, func(n sql.Node) bool {
-				if join != nil {
-					return false
-				}
-				switch n := n.(type) {
-				case plan.JoinNode, *plan.CrossJoin:
-					join = n
-					return false
-				default:
-					return true
-				}
-			})
+		t.Run(tt.name, func(t *testing.T) {
 			b := newJoinOrderBuilder()
-			b.populateSubgraph(join)
-			require.Equal(t, tt.expTES, b.edges[len(b.edges)-1].tes.String())
+			b.populateSubgraph(tt.join)
+			edgesEq(t, tt.expEdges, b.edges)
 		})
 	}
+}
+
+func tableNode(t sql.Table, name string) sql.Node {
+	return plan.NewTableAlias(
+		name,
+		plan.NewResolvedTable(t, nil, nil),
+	)
+}
+
+func newEq(eq string) sql.Expression {
+	vars := strings.Split(eq, "=")
+	if len(vars) > 2 {
+		panic("invalid equal expression")
+	}
+	left := strings.Split(vars[0], ".")
+	right := strings.Split(vars[1], ".")
+	return expression.NewEquals(
+		expression.NewGetFieldWithTable(0, sql.Int64, left[0], left[1], false),
+		expression.NewGetFieldWithTable(0, sql.Int64, right[0], right[1], false),
+	)
 }
 
 func TestAssociativeTransforms(t *testing.T) {
@@ -320,4 +436,38 @@ func newEdge(op JoinType, ses, leftV, rightV string) *edge {
 		},
 		ses: newVertexSet(ses),
 	}
+}
+
+func newEdge2(op JoinType, ses, tes, leftV, rightV string, rules []conflictRule, filter sql.Expression, nullRej string) edge {
+	return edge{
+		op: &operator{
+			joinType:      op,
+			rightVertices: newVertexSet(rightV),
+			leftVertices:  newVertexSet(leftV),
+		},
+		ses:              newVertexSet(ses),
+		tes:              newVertexSet(tes),
+		rules:            rules,
+		filter:           filter,
+		nullRejectedRels: newVertexSet(nullRej),
+	}
+}
+
+func edgesEq(t *testing.T, edges1, edges2 []edge) bool {
+	if len(edges1) != len(edges2) {
+		return false
+	}
+	for i := range edges1 {
+		e1 := edges1[i]
+		e2 := edges2[i]
+		require.Equal(t, e1.op.joinType, e2.op.joinType)
+		require.Equal(t, e1.op.leftVertices.String(), e2.op.leftVertices.String())
+		require.Equal(t, e1.op.rightVertices.String(), e2.op.rightVertices.String())
+		require.Equal(t, e1.filter, e2.filter)
+		require.Equal(t, e1.nullRejectedRels, e2.nullRejectedRels)
+		require.Equal(t, e1.tes, e2.tes)
+		require.Equal(t, e1.ses, e2.ses)
+		require.Equal(t, e1.rules, e2.rules)
+	}
+	return true
 }
