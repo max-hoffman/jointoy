@@ -28,9 +28,10 @@ import (
 //  - for each set, build non or inner join
 //    - separation lets us cut space in half
 
-func newJoinOrderBuilder() *joinOrderBuilder {
+func newJoinOrderBuilder(m Memo) *joinOrderBuilder {
 	return &joinOrderBuilder{
 		plans: make(map[vertexSet]sql.Node),
+		m:     m,
 	}
 }
 
@@ -42,7 +43,7 @@ type joinOrderBuilder struct {
 	//
 	// The group for a single base relation is simply the base relation itself.
 	plans         map[vertexSet]sql.Node
-	m             *memo
+	m             Memo
 	edges         []edge
 	vertices      []sql.Node
 	vertexNames   []string
@@ -197,11 +198,9 @@ func (j *joinOrderBuilder) dbSube() {
 				continue
 			}
 			s2 := subset.difference(s1)
-			setPrinter(all, s1, s2)
 			j.addPlans(s1, s2)
 		}
 	}
-	fmt.Println(j.plans[all].String())
 }
 
 func setPrinter(all, s1, s2 vertexSet) {
@@ -271,26 +270,17 @@ func (j *joinOrderBuilder) addPlans(s1, s2 vertexSet) {
 }
 
 func (j *joinOrderBuilder) addJoin(op JoinType, s1, s2 vertexSet, joinFilter, selFilters []sql.Expression) {
-	// get the optimal subplans for s1, s2
-	// memoize the join plan for s1 join s2
-	// record plan
-	j.plans[s1.union(s2)] = j.m.memoizeJoin(op, j.plans[s1], j.plans[s2], joinFilter, selFilters)
+	if s1.intersects(s2) {
+		panic("sets are not disjoint")
+	}
+	union := s1.union(s2)
+	left := j.plans[s1]
+	right := j.plans[s2]
 
-	var s1Names string
-	var rep string
-	for idx, ok := s1.next(0); ok; idx, ok = s1.next(idx + 1) {
-		s1Names += rep
-		s1Names += j.vertexNames[idx]
-		rep = ", "
+	j.plans[union] = j.m.memoizeJoin(op, left, right, joinFilter, selFilters)
+	if commute(op) {
+		j.plans[union] = j.m.memoizeJoin(op, right, left, joinFilter, selFilters)
 	}
-	var s2Names string
-	rep = ""
-	for idx, ok := s2.next(0); ok; idx, ok = s2.next(idx + 1) {
-		s2Names += rep
-		s2Names += j.vertexNames[idx]
-		rep = ", "
-	}
-	fmt.Printf("%s\n  - s1: %s\n  - s2: %s\n  - filter: %s\n  - sel: %s\n", op, s1Names, s2Names, joinFilter, selFilters)
 }
 
 func (j *joinOrderBuilder) allVertices() vertexSet {
@@ -345,7 +335,8 @@ type edge struct {
 	freeVars []*expression.GetField
 
 	// nullRejectedRels is the set of vertexes on which nulls are rejected by the
-	// filters.
+	// filters. We do not set any nullRejectedRels currently, which is not accurate
+	// but prevents potentially invalid transformations.
 	nullRejectedRels vertexSet
 
 	// ses is the syntactic eligibility set of the edge; in other words, it is the
@@ -380,9 +371,10 @@ func (e *edge) populateEdgeProps(allV vertexSet, allNames []string, edges []edge
 			return false
 		})
 	}
+
 	e.freeVars = cols
 
-	// null rejection is all vertex set - rejecting vertex set
+	// TODO implement, we currently limit transforms assuming no strong null safety
 	//e.nullRejectedRels = e.nullRejectingTables(nullAccepting, allNames, allV)
 
 	//SES is vertexSet of all tables referenced in cols
@@ -390,7 +382,6 @@ func (e *edge) populateEdgeProps(allV vertexSet, allNames []string, edges []edge
 	// use CD-C to expand dependency sets for operators
 	// front load preventing applicable operators that would push crossjoins
 	e.calcTES(edges)
-	fmt.Println(e.String())
 }
 
 func (e *edge) String() string {
@@ -411,21 +402,25 @@ func (e *edge) String() string {
 	return b.String()
 }
 
+// nullRejectingTables is a subset of the SES such that for every
+// null rejecting table, if all attributes of the table are null,
+// we can make a strong guarantee that the edge filter will not
+// evaluate to TRUE (FALSE or NULL are OK).
+//
+// For example, the filter (a.x = b.x OR a.x IS NOT NULL) is null
+// rejecting on (b), but not (a).
+//
+// A second more complicated example is null rejecting both on (a,b):
+//
+//	CASE
+//	  WHEN a.x IS NOT NULL THEN a.x = b.x
+//	  WHEN a.x <=> 2 THEN TRUE
+//	  ELSE NULL
+//	END
+//
+// TODO implement this
 func (e *edge) nullRejectingTables(nullAccepting []sql.Expression, allNames []string, allV vertexSet) vertexSet {
-	var nullableSet vertexSet
-	for _, e := range nullAccepting {
-		transform.InspectExpr(e, func(e sql.Expression) bool {
-			if e, ok := e.(*expression.GetField); ok {
-				for i, n := range allNames {
-					if n == e.Name() {
-						nullableSet.add(vertexIndex(i))
-					}
-				}
-			}
-			return true
-		})
-	}
-	return allV.difference(nullableSet)
+	panic("not implemented")
 }
 
 // calcSES updates the syntactic eligibility set for an edge. An SES
@@ -678,6 +673,13 @@ func rightAsscom(eA, eB *edge) bool {
 	return checkProperty(rightAsscomTable, eA, eB)
 }
 
+// commute transforms an operator tree by alternating child
+// join ordering.
+// For example:
+//
+//	e1 op e2
+//	=>
+//	e2 op e1
 func (e *edge) commute() bool {
 	switch e.op.joinType {
 	case InnerJoinType, CrossJoinType:

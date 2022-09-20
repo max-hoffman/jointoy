@@ -1,6 +1,7 @@
 package jointoy
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/dolthub/go-mysql-server/memory"
 	"github.com/dolthub/go-mysql-server/sql"
@@ -12,83 +13,425 @@ import (
 )
 
 func TestJoinOrderBuilder(t *testing.T) {
-	childSchema := sql.NewPrimaryKeySchema(sql.Schema{
-		{Name: "i", Type: sql.Int64, Nullable: true},
-		{Name: "s", Type: sql.Text, Nullable: true},
-	})
-	child := memory.NewTable("test", childSchema, nil)
-
-	//TODO need transform tests
-	//  - make sure we get comm, assoc, lassoc, rassoc
-	// TODO need preventative tests
-	//  - block crossjoins for each transform
-	//  - make sure TES blocks invalid transforms for each
-	//  - make sure we don't commute LEFT JOIN or JSON_TABLE
-
 	tests := []struct {
-		in   sql.Node
-		name string
+		in    sql.Node
+		name  string
+		plans string
 	}{
 		{
-			name: "starter",
+			name: "inner joins",
 			in: plan.NewInnerJoin(
 				plan.NewInnerJoin(
 					plan.NewInnerJoin(
-						plan.NewTableAlias(
-							"a",
-							plan.NewResolvedTable(child, nil, nil),
-						),
-						plan.NewTableAlias(
-							"b",
-							plan.NewResolvedTable(child, nil, nil),
-						),
-						expression.NewEquals(
-							expression.NewGetFieldWithTable(0, sql.Int64, "a", "i", false),
-							expression.NewGetFieldWithTable(0, sql.Int64, "b", "i", false),
-						),
+						tableNode("a"),
+						tableNode("b"),
+						newEq("a.i = b.i"),
 					),
-					plan.NewTableAlias(
-						"c",
-						plan.NewResolvedTable(child, nil, nil),
-					), expression.NewEquals(
-						expression.NewGetFieldWithTable(0, sql.Int64, "b", "i", false),
-						expression.NewGetFieldWithTable(0, sql.Int64, "c", "i", false)),
+					tableNode("c"),
+					newEq("b.i = c.i"),
 				),
-				plan.NewTableAlias(
-					"d",
-					plan.NewResolvedTable(child, nil, nil),
-				),
-				expression.NewEquals(
-					expression.NewGetFieldWithTable(0, sql.Int64, "c", "i", false),
-					expression.NewGetFieldWithTable(0, sql.Int64, "d", "i", false)),
+				tableNode("d"),
+				newEq("c.i = d.i"),
 			),
+			plans: `----
+InnerJoin(a.i  =  b.i)
+ ├─ Table(a)
+ └─ Table(b)
+----
+InnerJoin(a.i  =  b.i)
+ ├─ Table(b)
+ └─ Table(a)
+----
+InnerJoin(b.i  =  c.i)
+ ├─ Table(b)
+ └─ Table(c)
+----
+InnerJoin(b.i  =  c.i)
+ ├─ Table(c)
+ └─ Table(b)
+----
+InnerJoin(a.i  =  b.i)
+ ├─ Table(a)
+ └─ InnerJoin(b.i  =  c.i)
+     ├─ Table(c)
+     └─ Table(b)
+----
+InnerJoin(a.i  =  b.i)
+ ├─ InnerJoin(b.i  =  c.i)
+ │   ├─ Table(c)
+ │   └─ Table(b)
+ └─ Table(a)
+----
+InnerJoin(b.i  =  c.i)
+ ├─ InnerJoin(a.i  =  b.i)
+ │   ├─ Table(b)
+ │   └─ Table(a)
+ └─ Table(c)
+----
+InnerJoin(b.i  =  c.i)
+ ├─ Table(c)
+ └─ InnerJoin(a.i  =  b.i)
+     ├─ Table(b)
+     └─ Table(a)
+----
+InnerJoin(c.i  =  d.i)
+ ├─ Table(c)
+ └─ Table(d)
+----
+InnerJoin(c.i  =  d.i)
+ ├─ Table(d)
+ └─ Table(c)
+----
+InnerJoin(b.i  =  c.i)
+ ├─ Table(b)
+ └─ InnerJoin(c.i  =  d.i)
+     ├─ Table(d)
+     └─ Table(c)
+----
+InnerJoin(b.i  =  c.i)
+ ├─ InnerJoin(c.i  =  d.i)
+ │   ├─ Table(d)
+ │   └─ Table(c)
+ └─ Table(b)
+----
+InnerJoin(c.i  =  d.i)
+ ├─ InnerJoin(b.i  =  c.i)
+ │   ├─ Table(c)
+ │   └─ Table(b)
+ └─ Table(d)
+----
+InnerJoin(c.i  =  d.i)
+ ├─ Table(d)
+ └─ InnerJoin(b.i  =  c.i)
+     ├─ Table(c)
+     └─ Table(b)
+----
+InnerJoin(a.i  =  b.i)
+ ├─ Table(a)
+ └─ InnerJoin(c.i  =  d.i)
+     ├─ Table(d)
+     └─ InnerJoin(b.i  =  c.i)
+         ├─ Table(c)
+         └─ Table(b)
+----
+InnerJoin(a.i  =  b.i)
+ ├─ InnerJoin(c.i  =  d.i)
+ │   ├─ Table(d)
+ │   └─ InnerJoin(b.i  =  c.i)
+ │       ├─ Table(c)
+ │       └─ Table(b)
+ └─ Table(a)
+----
+InnerJoin(b.i  =  c.i)
+ ├─ InnerJoin(a.i  =  b.i)
+ │   ├─ Table(b)
+ │   └─ Table(a)
+ └─ InnerJoin(c.i  =  d.i)
+     ├─ Table(d)
+     └─ Table(c)
+----
+InnerJoin(b.i  =  c.i)
+ ├─ InnerJoin(c.i  =  d.i)
+ │   ├─ Table(d)
+ │   └─ Table(c)
+ └─ InnerJoin(a.i  =  b.i)
+     ├─ Table(b)
+     └─ Table(a)
+----
+InnerJoin(c.i  =  d.i)
+ ├─ InnerJoin(b.i  =  c.i)
+ │   ├─ Table(c)
+ │   └─ InnerJoin(a.i  =  b.i)
+ │       ├─ Table(b)
+ │       └─ Table(a)
+ └─ Table(d)
+----
+InnerJoin(c.i  =  d.i)
+ ├─ Table(d)
+ └─ InnerJoin(b.i  =  c.i)
+     ├─ Table(c)
+     └─ InnerJoin(a.i  =  b.i)
+         ├─ Table(b)
+         └─ Table(a)
+`,
+		},
+		{
+			name: "non-inner joins",
+			in: plan.NewInnerJoin(
+				plan.NewInnerJoin(
+					plan.NewLeftJoin(
+						tableNode("a"),
+						tableNode("b"),
+						newEq("a.i = b.i"),
+					),
+					plan.NewLeftJoin(
+						NewFullJoin(
+							tableNode("c"),
+							tableNode("d"),
+							newEq("c.i = d.i"),
+						),
+						tableNode("e"),
+						newEq("c.i = e.i"),
+					),
+					newEq("a.i = e.i"),
+				),
+				plan.NewInnerJoin(
+					tableNode("f"),
+					tableNode("g"),
+					newEq("f.i = g.i"),
+				),
+				newEq("e.i = g.i"),
+			),
+			plans: `----
+LeftJoin(a.i  =  b.i)
+ ├─ Table(a)
+ └─ Table(b)
+----
+FullOuter(c.i  =  d.i)
+ ├─ Table(c)
+ └─ Table(d)
+----
+LeftJoin(c.i  =  e.i)
+ ├─ FullOuter(c.i  =  d.i)
+ │   ├─ Table(c)
+ │   └─ Table(d)
+ └─ Table(e)
+----
+InnerJoin(a.i  =  e.i)
+ ├─ Table(a)
+ └─ LeftJoin(c.i  =  e.i)
+     ├─ FullOuter(c.i  =  d.i)
+     │   ├─ Table(c)
+     │   └─ Table(d)
+     └─ Table(e)
+----
+InnerJoin(a.i  =  e.i)
+ ├─ LeftJoin(c.i  =  e.i)
+ │   ├─ FullOuter(c.i  =  d.i)
+ │   │   ├─ Table(c)
+ │   │   └─ Table(d)
+ │   └─ Table(e)
+ └─ Table(a)
+----
+LeftJoin(a.i  =  b.i)
+ ├─ InnerJoin(a.i  =  e.i)
+ │   ├─ LeftJoin(c.i  =  e.i)
+ │   │   ├─ FullOuter(c.i  =  d.i)
+ │   │   │   ├─ Table(c)
+ │   │   │   └─ Table(d)
+ │   │   └─ Table(e)
+ │   └─ Table(a)
+ └─ Table(b)
+----
+InnerJoin(a.i  =  e.i)
+ ├─ LeftJoin(a.i  =  b.i)
+ │   ├─ Table(a)
+ │   └─ Table(b)
+ └─ LeftJoin(c.i  =  e.i)
+     ├─ FullOuter(c.i  =  d.i)
+     │   ├─ Table(c)
+     │   └─ Table(d)
+     └─ Table(e)
+----
+InnerJoin(a.i  =  e.i)
+ ├─ LeftJoin(c.i  =  e.i)
+ │   ├─ FullOuter(c.i  =  d.i)
+ │   │   ├─ Table(c)
+ │   │   └─ Table(d)
+ │   └─ Table(e)
+ └─ LeftJoin(a.i  =  b.i)
+     ├─ Table(a)
+     └─ Table(b)
+----
+InnerJoin(f.i  =  g.i)
+ ├─ Table(f)
+ └─ Table(g)
+----
+InnerJoin(f.i  =  g.i)
+ ├─ Table(g)
+ └─ Table(f)
+----
+InnerJoin(e.i  =  g.i)
+ ├─ LeftJoin(c.i  =  e.i)
+ │   ├─ FullOuter(c.i  =  d.i)
+ │   │   ├─ Table(c)
+ │   │   └─ Table(d)
+ │   └─ Table(e)
+ └─ InnerJoin(f.i  =  g.i)
+     ├─ Table(g)
+     └─ Table(f)
+----
+InnerJoin(e.i  =  g.i)
+ ├─ InnerJoin(f.i  =  g.i)
+ │   ├─ Table(g)
+ │   └─ Table(f)
+ └─ LeftJoin(c.i  =  e.i)
+     ├─ FullOuter(c.i  =  d.i)
+     │   ├─ Table(c)
+     │   └─ Table(d)
+     └─ Table(e)
+----
+InnerJoin(a.i  =  e.i)
+ ├─ Table(a)
+ └─ InnerJoin(e.i  =  g.i)
+     ├─ InnerJoin(f.i  =  g.i)
+     │   ├─ Table(g)
+     │   └─ Table(f)
+     └─ LeftJoin(c.i  =  e.i)
+         ├─ FullOuter(c.i  =  d.i)
+         │   ├─ Table(c)
+         │   └─ Table(d)
+         └─ Table(e)
+----
+InnerJoin(a.i  =  e.i)
+ ├─ InnerJoin(e.i  =  g.i)
+ │   ├─ InnerJoin(f.i  =  g.i)
+ │   │   ├─ Table(g)
+ │   │   └─ Table(f)
+ │   └─ LeftJoin(c.i  =  e.i)
+ │       ├─ FullOuter(c.i  =  d.i)
+ │       │   ├─ Table(c)
+ │       │   └─ Table(d)
+ │       └─ Table(e)
+ └─ Table(a)
+----
+InnerJoin(e.i  =  g.i)
+ ├─ InnerJoin(a.i  =  e.i)
+ │   ├─ LeftJoin(c.i  =  e.i)
+ │   │   ├─ FullOuter(c.i  =  d.i)
+ │   │   │   ├─ Table(c)
+ │   │   │   └─ Table(d)
+ │   │   └─ Table(e)
+ │   └─ Table(a)
+ └─ InnerJoin(f.i  =  g.i)
+     ├─ Table(g)
+     └─ Table(f)
+----
+InnerJoin(e.i  =  g.i)
+ ├─ InnerJoin(f.i  =  g.i)
+ │   ├─ Table(g)
+ │   └─ Table(f)
+ └─ InnerJoin(a.i  =  e.i)
+     ├─ LeftJoin(c.i  =  e.i)
+     │   ├─ FullOuter(c.i  =  d.i)
+     │   │   ├─ Table(c)
+     │   │   └─ Table(d)
+     │   └─ Table(e)
+     └─ Table(a)
+----
+LeftJoin(a.i  =  b.i)
+ ├─ InnerJoin(e.i  =  g.i)
+ │   ├─ InnerJoin(f.i  =  g.i)
+ │   │   ├─ Table(g)
+ │   │   └─ Table(f)
+ │   └─ InnerJoin(a.i  =  e.i)
+ │       ├─ LeftJoin(c.i  =  e.i)
+ │       │   ├─ FullOuter(c.i  =  d.i)
+ │       │   │   ├─ Table(c)
+ │       │   │   └─ Table(d)
+ │       │   └─ Table(e)
+ │       └─ Table(a)
+ └─ Table(b)
+----
+InnerJoin(a.i  =  e.i)
+ ├─ LeftJoin(a.i  =  b.i)
+ │   ├─ Table(a)
+ │   └─ Table(b)
+ └─ InnerJoin(e.i  =  g.i)
+     ├─ InnerJoin(f.i  =  g.i)
+     │   ├─ Table(g)
+     │   └─ Table(f)
+     └─ LeftJoin(c.i  =  e.i)
+         ├─ FullOuter(c.i  =  d.i)
+         │   ├─ Table(c)
+         │   └─ Table(d)
+         └─ Table(e)
+----
+InnerJoin(a.i  =  e.i)
+ ├─ InnerJoin(e.i  =  g.i)
+ │   ├─ InnerJoin(f.i  =  g.i)
+ │   │   ├─ Table(g)
+ │   │   └─ Table(f)
+ │   └─ LeftJoin(c.i  =  e.i)
+ │       ├─ FullOuter(c.i  =  d.i)
+ │       │   ├─ Table(c)
+ │       │   └─ Table(d)
+ │       └─ Table(e)
+ └─ LeftJoin(a.i  =  b.i)
+     ├─ Table(a)
+     └─ Table(b)
+----
+InnerJoin(e.i  =  g.i)
+ ├─ InnerJoin(a.i  =  e.i)
+ │   ├─ LeftJoin(c.i  =  e.i)
+ │   │   ├─ FullOuter(c.i  =  d.i)
+ │   │   │   ├─ Table(c)
+ │   │   │   └─ Table(d)
+ │   │   └─ Table(e)
+ │   └─ LeftJoin(a.i  =  b.i)
+ │       ├─ Table(a)
+ │       └─ Table(b)
+ └─ InnerJoin(f.i  =  g.i)
+     ├─ Table(g)
+     └─ Table(f)
+----
+InnerJoin(e.i  =  g.i)
+ ├─ InnerJoin(f.i  =  g.i)
+ │   ├─ Table(g)
+ │   └─ Table(f)
+ └─ InnerJoin(a.i  =  e.i)
+     ├─ LeftJoin(c.i  =  e.i)
+     │   ├─ FullOuter(c.i  =  d.i)
+     │   │   ├─ Table(c)
+     │   │   └─ Table(d)
+     │   └─ Table(e)
+     └─ LeftJoin(a.i  =  b.i)
+         ├─ Table(a)
+         └─ Table(b)
+`,
 		},
 	}
 
 	for _, tt := range tests {
-		j := newJoinOrderBuilder()
-		j.reorderJoin(tt.in)
-
-		// TODO verify SES
-
-		// TODO verify TES
-
-		// TODO verify null rejecting
-
-		// TODO add dummy memo, collect all plans
-		// check valid and invalid
-
-		// TODO verify optimal plan
+		t.Run(tt.name, func(t *testing.T) {
+			m := &testMemo{b: &bytes.Buffer{}}
+			j := newJoinOrderBuilder(m)
+			j.reorderJoin(tt.in)
+			fmt.Println(m.plans())
+			require.Equal(t, tt.plans, m.plans())
+		})
 	}
 }
 
-func TestJoinOrderBuilder_populateSubgraph2(t *testing.T) {
-	childSchema := sql.NewPrimaryKeySchema(sql.Schema{
-		{Name: "i", Type: sql.Int64, Nullable: true},
-		{Name: "s", Type: sql.Text, Nullable: true},
-	})
-	child := memory.NewTable("test", childSchema, nil)
+type testMemo struct {
+	b *bytes.Buffer
+	i int
+}
 
+func (m *testMemo) plans() string {
+	return m.b.String()
+}
+
+func (m *testMemo) memoize() {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (m *testMemo) memoizeJoin(
+	op JoinType,
+	left sql.Node,
+	right sql.Node,
+	joinFilter []sql.Expression,
+	selFilter []sql.Expression,
+) sql.Node {
+	n := constructJoin(op, left, right, joinFilter, selFilter)
+	m.b.WriteString("----\n")
+	m.b.WriteString(n.String())
+	m.i++
+	return n
+}
+
+func TestJoinOrderBuilder_populateSubgraph2(t *testing.T) {
 	tests := []struct {
 		name     string
 		join     sql.Node
@@ -97,12 +440,12 @@ func TestJoinOrderBuilder_populateSubgraph2(t *testing.T) {
 		{
 			name: "cross join",
 			join: plan.NewCrossJoin(
-				tableNode(child, "a"),
+				tableNode("a"),
 				plan.NewInnerJoin(
-					tableNode(child, "b"),
+					tableNode("b"),
 					plan.NewLeftJoin(
-						tableNode(child, "c"),
-						tableNode(child, "d"),
+						tableNode("c"),
+						tableNode("d"),
 						newEq("c.x=d.x"),
 					),
 					newEq("b.y=d.y"),
@@ -117,12 +460,12 @@ func TestJoinOrderBuilder_populateSubgraph2(t *testing.T) {
 		{
 			name: "right deep left join",
 			join: plan.NewInnerJoin(
-				tableNode(child, "a"),
+				tableNode("a"),
 				plan.NewInnerJoin(
-					tableNode(child, "b"),
+					tableNode("b"),
 					plan.NewLeftJoin(
-						tableNode(child, "c"),
-						tableNode(child, "d"),
+						tableNode("c"),
+						tableNode("d"),
 						newEq("c.x=d.x"),
 					),
 					newEq("b.y=d.y"),
@@ -139,13 +482,13 @@ func TestJoinOrderBuilder_populateSubgraph2(t *testing.T) {
 			name: "bushy left joins",
 			join: plan.NewLeftJoin(
 				plan.NewLeftJoin(
-					tableNode(child, "a"),
-					tableNode(child, "b"),
+					tableNode("a"),
+					tableNode("b"),
 					newEq("a.x=b.x"),
 				),
 				plan.NewLeftJoin(
-					tableNode(child, "c"),
-					tableNode(child, "d"),
+					tableNode("c"),
+					tableNode("d"),
 					newEq("c.x=d.x"),
 				),
 				newEq("b.y=c.y"),
@@ -164,13 +507,13 @@ func TestJoinOrderBuilder_populateSubgraph2(t *testing.T) {
 			name: "degenerate inner join",
 			join: NewFullJoin(
 				plan.NewInnerJoin(
-					tableNode(child, "a"),
-					tableNode(child, "b"),
+					tableNode("a"),
+					tableNode("b"),
 					expression.NewLiteral(true, sql.Boolean),
 				),
 				plan.NewInnerJoin(
-					tableNode(child, "c"),
-					tableNode(child, "d"),
+					tableNode("c"),
+					tableNode("d"),
 					expression.NewLiteral(true, sql.Boolean),
 				),
 				newEq("a.x=c.x"),
@@ -193,11 +536,11 @@ func TestJoinOrderBuilder_populateSubgraph2(t *testing.T) {
 			name: "semi join",
 			join: NewSemiJoin(
 				plan.NewLeftJoin(
-					tableNode(child, "b"),
-					tableNode(child, "c"),
+					tableNode("b"),
+					tableNode("c"),
 					newEq("b.x=c.x"),
 				),
-				tableNode(child, "a"),
+				tableNode("a"),
 				newEq("a.y=b.y"),
 			),
 			expEdges: []edge{
@@ -205,42 +548,15 @@ func TestJoinOrderBuilder_populateSubgraph2(t *testing.T) {
 				newEdge2(SemiJoinType, "101", "101", "110", "001", nil, newEq("a.y=b.y"), ""), // A x (BC)
 			},
 		},
-		{
-			name: "null rejecting",
-			join: plan.NewCrossJoin(
-				tableNode(child, "a"),
-				plan.NewInnerJoin(
-					tableNode(child, "b"),
-					plan.NewLeftJoin(
-						tableNode(child, "c"),
-						tableNode(child, "d"),
-						newEq("c.x=d.x"),
-					),
-					newEq("b.y=d.y"),
-				),
-			),
-			expEdges: []edge{
-				newEdge2(LeftJoinType, "0011", "0011", "0010", "0001", nil, newEq("c.x=d.x"), ""),  // C x D
-				newEdge2(InnerJoinType, "0101", "0111", "0100", "0011", nil, newEq("b.y=d.y"), ""), // B x (CD)
-				newEdge2(CrossJoinType, "0000", "1111", "1000", "0111", nil, nil, ""),              // A x (BCD)
-			},
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b := newJoinOrderBuilder()
+			b := newJoinOrderBuilder(&memo{})
 			b.populateSubgraph(tt.join)
 			edgesEq(t, tt.expEdges, b.edges)
 		})
 	}
-}
-
-func tableNode(t sql.Table, name string) sql.Node {
-	return plan.NewTableAlias(
-		name,
-		plan.NewResolvedTable(t, nil, nil),
-	)
 }
 
 func newEq(eq string) sql.Expression {
@@ -415,6 +731,16 @@ func TestAssociativeTransforms(t *testing.T) {
 			require.False(t, res)
 		})
 	}
+}
+
+var childSchema = sql.NewPrimaryKeySchema(sql.Schema{
+	{Name: "i", Type: sql.Int64, Nullable: true},
+	{Name: "s", Type: sql.Text, Nullable: true},
+})
+
+func tableNode(name string) sql.Node {
+	t := memory.NewTable(name, childSchema, nil)
+	return plan.NewResolvedTable(t, nil, nil)
 }
 
 func newVertexSet(s string) vertexSet {

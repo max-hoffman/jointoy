@@ -12,77 +12,79 @@ type joinBase struct {
 	op     JoinType
 }
 
-func (f *joinBase) Expressions() []sql.Expression {
-	return []sql.Expression{f.filter}
+func (j *joinBase) Expressions() []sql.Expression {
+	return []sql.Expression{j.filter}
 }
 
-func (f *joinBase) Left() sql.Node {
-	return f.left
+func (j *joinBase) Left() sql.Node {
+	return j.left
 }
 
-func (f *joinBase) Right() sql.Node {
-	return f.right
+func (j *joinBase) Right() sql.Node {
+	return j.right
 }
 
-func (f *joinBase) JoinCond() sql.Expression {
-	return f.filter
+func (j *joinBase) JoinCond() sql.Expression {
+	return j.filter
 }
 
-func (f *joinBase) Comment() string {
+func (j *joinBase) Comment() string {
 	//TODO implement me
 	panic("implement me")
 }
 
-func (f *joinBase) Resolved() bool {
+func (j *joinBase) Resolved() bool {
 	//TODO implement me
 	panic("implement me")
 }
 
-func (f *joinBase) Schema() sql.Schema {
+func (j *joinBase) Schema() sql.Schema {
 	//TODO implement me
 	panic("implement me")
 }
 
-func (f *joinBase) Children() []sql.Node {
-	return []sql.Node{f.left, f.right}
+func (j *joinBase) Children() []sql.Node {
+	return []sql.Node{j.left, j.right}
 }
 
-func (f *joinBase) CheckPrivileges(ctx *sql.Context, opChecker sql.PrivilegedOperationChecker) bool {
+func (j *joinBase) CheckPrivileges(ctx *sql.Context, opChecker sql.PrivilegedOperationChecker) bool {
 	//TODO implement me
 	panic("implement me")
 }
-func (f *joinBase) JoinType() plan.JoinType {
+func (j *joinBase) JoinType() plan.JoinType {
 	panic("iplement me")
 }
 
-func (f *joinBase) WithExpressions(expression ...sql.Expression) (sql.Node, error) {
-	ret := *f
+func (j *joinBase) WithExpressions(expression ...sql.Expression) (sql.Node, error) {
+	ret := *j
 	ret.filter = expression[0]
 	return &ret, nil
 }
 
-func (f *joinBase) WithScopeLen(i int) plan.JoinNode {
+func (j *joinBase) WithScopeLen(i int) plan.JoinNode {
 	//TODO implement me
 	panic("implement me")
 }
 
-func (f *joinBase) WithMultipassMode() plan.JoinNode {
+func (j *joinBase) WithMultipassMode() plan.JoinNode {
 	//TODO implement me
 	panic("implement me")
 }
 
-func (f *joinBase) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
+func (j *joinBase) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 	//TODO implement me
 	panic("implement me")
 }
 
-func (f *joinBase) WithChildren(children ...sql.Node) (sql.Node, error) {
-	return NewFullJoin(children[0], children[1], f.filter), nil
+func (j *joinBase) WithChildren(children ...sql.Node) (sql.Node, error) {
+	return NewFullJoin(children[0], children[1], j.filter), nil
 }
 
-func (f *joinBase) String() string {
-	//TODO implement me
-	panic("implement me")
+func (j *joinBase) String() string {
+	pr := sql.NewTreePrinter()
+	_ = pr.WriteNode("%s%s", j.op, j.filter)
+	_ = pr.WriteChildren(j.left.String(), j.right.String())
+	return pr.String()
 }
 
 var _ sql.Node = (*FullJoin)(nil)
@@ -128,11 +130,6 @@ func (f *FullJoin) WithChildren(children ...sql.Node) (sql.Node, error) {
 	return NewFullJoin(children[0], children[1], f.filter), nil
 }
 
-func (f *FullJoin) String() string {
-	//TODO implement me
-	panic("implement me")
-}
-
 var _ sql.Node = (*SemiJoin)(nil)
 var _ plan.JoinNode = (*SemiJoin)(nil)
 var _ sql.Expressioner = (*SemiJoin)(nil)
@@ -176,11 +173,6 @@ func (j *SemiJoin) WithChildren(children ...sql.Node) (sql.Node, error) {
 	return NewSemiJoin(children[0], children[1], j.filter), nil
 }
 
-func (j *SemiJoin) String() string {
-	//TODO implement me
-	panic("implement me")
-}
-
 var _ sql.Node = (*AntiJoin)(nil)
 var _ plan.JoinNode = (*AntiJoin)(nil)
 var _ sql.Expressioner = (*AntiJoin)(nil)
@@ -222,11 +214,6 @@ func (j *AntiJoin) RowIter(ctx *sql.Context, row sql.Row) (sql.RowIter, error) {
 
 func (j *AntiJoin) WithChildren(children ...sql.Node) (sql.Node, error) {
 	return NewAntiJoin(children[0], children[1], j.filter), nil
-}
-
-func (j *AntiJoin) String() string {
-	//TODO implement me
-	panic("implement me")
 }
 
 type GroupJoin struct{}
