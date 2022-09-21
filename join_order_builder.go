@@ -10,31 +10,104 @@ import (
 	"strings"
 )
 
-// conflict detectors; calculate SES and TES
-
-// conflict rule sets
-//   - representation
-//   - execution
-
-// applicability rules (depend on TES, join types, s1 and s2)
-
-// redundancy checks
-// selection filters
-// transitive closure
-// functional deps
-
-// exhaust plans
-//  - try all sets, building upwards
-//  - for each set, build non or inner join
-//    - separation lets us cut space in half
-
-func newJoinOrderBuilder(m Memo) *joinOrderBuilder {
-	return &joinOrderBuilder{
-		plans: make(map[vertexSet]sql.Node),
-		m:     m,
-	}
-}
-
+// joinOrderBuilder enumerates valid plans for a join tree.  We build the join
+// tree bottom up, first joining single nodes with join condition "edges", then
+// single nodes to hypernodes (1+n), and finally hyper nodes to
+// other hypernodes (n+m).
+//
+// Every valid combination of subtrees is considered with two exceptions.
+//
+// 1) Cross joins and other joins with degenerate predicates are never pushed
+// lower in the tree.
+//
+// 2) Transformations that are valid but create degenerate filters (new
+// cross joins) are not considered.
+//
+// The logic for this module is sourced from
+// https://www.researchgate.net/publication/262216932_On_the_correct_and_complete_enumeration_of_the_core_search_space
+// with help from
+// https://github.com/cockroachdb/cockroach/blob/master/pkg/sql/opt/xform/join_order_builder.go.
+//
+// Two theoretical observations underpin the enumeration:
+//
+// 1) Either associativity or l-asscom can be applied to left nesting, but not
+// both. Either associativity or r-asscom can be applied to right nesting, but
+// not both.
+//
+// 2) Every transformation in the core search space (of two operators) can be
+// reached by one commutative transformation on each operator and one assoc,
+// l-asscom, or r-asscom.
+//
+// We use this assumption to implement the dbSube enumeration search, using a
+// CD-C conflict detection rules to encode reordering applicability:
+//
+// 1) Use bitsets to iterate all combinations of join plan subtrees, starting
+// with two tables and building upwards. For example, a join A x B x C would
+// start with 10 x 01 (A x B) and build up to sets 100 x 011 (A x (BC)) and 101
+// x 010 ((AC) x B).
+//
+// 2) Attempt to make a new plan with every combination of subtrees
+// (hypernodes) for every join operator. This takes the form (op s1 s2), where
+// s1 is the right subtree, s2 is the left subtree, and op is the edge
+// corresponding to a specific join type and filter. Most of the time one
+// operator => one edge, except when join conjunctions are split to make
+// multiple edges for one join operator. We differentiate innerEdges and
+// nonInnerEdges to avoid innerJoins plans overwriting the often slower
+// nonInner join plans. A successful edge between two sets adds a join plan to
+// the memo.
+//
+// 3) Save the best plan for every memo group (unordered group of table joins)
+// moving upwards through the tree, finishing with the optimal memo group for
+// the join including every table.
+//
+// Applicability rules:
+//
+// We build applicibility rules before exhaustive enumeration to filter valid
+// plans. We consider a reordering valid by checking:
+//
+// 1) Transform compatibility: a lookup table between two join operator types
+//
+// 2) Eligibility sets: left and right subtree dependencies required for a
+// valid reordering. The syntactic eligibility set (SES) is the table
+// dependencies of the edge's filter. For example, the SES for a filter a.x =
+// b.y is (a,b).  The total eligibility set (TES) is an expansion of the SES
+// that conceptually behaves similarly to an SES; i.e. only hypernodes that
+// completely intersect an edge's TES are valid. The difference is that TES is
+// expanded based on the original edge's join operator subdependencies.  The
+// paper referenced encodes an algorithms for building a TES to fully encode
+// associativity, left-asscom, and right-asscom (commutativity is a unary
+// operator property).
+//
+// For example, the INNER JOIN in the query below is subject to assoc(left
+// join, inner join) = false:
+//
+//	SELECT *
+//	FROM (SELECT * FROM ab LEFT JOIN uv ON a = u)
+//	INNER JOIN xy
+//	ON x = v
+//
+// As a result, the inner join's TES, initialized as the SES(xy, uv), is
+// expanded to include ab. The final TES(xy, uv, ab) invalidates
+// LEFT JOIN association during exhaustive enumeration:
+//
+//	SELECT *
+//	FROM (SELECT * FROM ab LEFT JOIN xy ON x = v)
+//	INNER JOIN uv
+//	ON a = u
+//
+// Note the disconnect between the global nature of the TES, which is built
+// fully before enumeration, and local nature of testing every enumeration
+// against the pre-computed TES.
+//
+// In special cases, the TES is not expressive enough to represent certain
+// table dependencies. Conflict rules of the form R1 -> R2 are an escape hatch
+// to require the dependency table set R2 when any subset of R1 is present in a
+// candidate plan.
+//
+// TODO: transitive predicates
+// TODO: null rejecting tables
+// TODO: redundancy checks
+// TODO: functional dependencies
 type joinOrderBuilder struct {
 	// plans maps from a set of base relations to the memo group for the join tree
 	// that contains those relations (and only those relations). As an example,
@@ -49,6 +122,13 @@ type joinOrderBuilder struct {
 	vertexNames   []string
 	innerEdges    edgeSet
 	nonInnerEdges edgeSet
+}
+
+func newJoinOrderBuilder(m Memo) *joinOrderBuilder {
+	return &joinOrderBuilder{
+		plans: make(map[vertexSet]sql.Node),
+		m:     m,
+	}
 }
 
 func (j *joinOrderBuilder) reorderJoin(n sql.Node) {
@@ -418,6 +498,7 @@ func (e *edge) String() string {
 //	  ELSE NULL
 //	END
 //
+// Refer to https://dl.acm.org/doi/10.1145/244810.244812 for more examples.
 // TODO implement this
 func (e *edge) nullRejectingTables(nullAccepting []sql.Expression, allNames []string, allV vertexSet) vertexSet {
 	panic("not implemented")
